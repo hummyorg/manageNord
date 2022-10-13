@@ -1,0 +1,521 @@
+#!/bin/bash
+
+#  TODO
+#  Be able to connect to the desired destination and to the best server from there.
+#- Nordvpn memory maintenance
+
+
+LANINTERFACE="lan0" #Running a DHCP server on 10.0.0.0/24
+WANINTERFACE="eth0" #DHCP client. Fixed IP from the router
+VPNINTERFACE="nordlynx" #vpn interface name as reported by ifconfig
+KEEPALIVEIP="1.1.1.1" #IP to use for keep alive pings and checking connectivity to internet
+TVIP="10.0.0.2" #Static TV IP offered via lan0 
+
+VPNUSER="yourNordEmail"
+VPNPASS="yourNordPass"
+#Locations that we want to connect to. I dont like the servers in the US east coast or too far away in eastern europe for my setup, so you may want to change the lists.
+#https://support.nordvpn.com/General-info/SmartPlay/1047407532/How-to-securely-watch-Netflix-with-NordVPN.htm
+EUPOOL=(Albania Belgium Bulgaria Croatia Czech_Republic Denmark Estonia Greece Hungary Iceland Ireland Latvia Luxembourg Norway Poland Romania Serbia Slovakia Slovenia Sweden Switzerland)
+USACITIESPOOL=(Buffalo Dallas Denver Los_Angeles Phoenix Salt_Lake_City San_Francisco Seattle)
+DEFAULTVPNDESTINATION="London" #City, Country, Server... The server will try to autoconnect to the same city if possible, if not it will try the DEFAULTVPNDESTINATION
+
+#Albania: 2 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:2,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Belgium: 21 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:21,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Bulgaria: 33 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:33,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Croatia: 54 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:54,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Czech_Republic: 57 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:57,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Denmark: 58 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:58,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Estonia: 68 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:68,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Greece: 84 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:84,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Hungary: 98 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:98,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Iceland: 99 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:99,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Ireland: 104 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:104,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Letonia(Latvia): 119 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:119,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Luxemburg: 126 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:126,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Norway: 163 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:163,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Poland: 174 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:174,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Romania: 179 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:179,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Serbia: 192 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:192,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Slovakia: 196 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:196,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Slovenia: 197 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:197,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Sweden: 208 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:208,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+#Switzerand: 209 - https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:209,%22servers_groups%22:[11],%22servers_technologies%22:[35]}&lang=es
+
+rebootScriptName="rebootOnNoPing"
+#This script's name, cleaned of dots and slashes
+scriptName=$(echo $0|sed 's/\.\///g')
+scriptName=$(basename $scriptName)
+scriptName=$(echo $scriptName|sed 's/\.sh//g')
+
+scriptPath=$(whereis $scriptName|awk -F': ' '{print $2}')
+
+scriptDirPath=$(dirname $scriptPath)
+
+#Select current city and replace blanks with underscores. I.e San Francisco -> San_Francisco
+currentCity=$(nordvpn status|grep City|awk -F': ' {'print $2'}|sed -r 's/[ ]+/_/g')
+
+checkOverlap () {
+    #echo "$scriptPath: Number of scripts executing: $numScriptExecuting"|logger
+    #If wc reports more than 3 processes running, there are previous executions
+    overlap=0
+    while [ $overlap -lt 10 ]; do
+    	let overlap=overlap+1
+    	numScriptExecuting=$(ps axf|grep $scriptName|grep -v grep|wc -l)
+    	if [ $numScriptExecuting -gt 3 ]; then
+        	echo "$scriptPath: Script already running from a previous execution..."|logger
+                echo "$scriptPath: sleep 3 to let the previous processes finish. Retry attempt $counter"|logger
+                sleep 3
+		if [ $overlap -eq 10 ]; then
+			echo "$scriptPath: Script still running after retries... Exitting"|logger -s
+			exit 1	
+		fi
+	else
+		overlap=10
+    	fi
+    done
+}
+
+removeCron () {
+	echo "$scriptPath: Removing cron /etc/cron.d/vpnChecks..."|logger
+	#Stop checks while VPN is down
+    	rm -f /etc/cron.d/vpnChecks
+    	#/bin/systemctl restart cron|logger
+}
+
+removeAutoReboot () {
+	echo "$scriptPath: Removing $rebootScriptName..."|logger
+        #Stop checks while VPN is down
+        rm -f $scriptDirPath/$rebootScriptName
+}
+
+removeAutoStart () {
+	echo "$scriptPath: Removing auto start VPN on reboot..."|logger
+	sed -i /$scriptName/d  /etc/rc.local
+}
+
+stopVPN () {
+	echo "$scriptPath: Disconnecting VPN and restarting daemon..."|logger
+	#Disconnet VPN
+	/usr/bin/nordvpn d|logger
+	#Restart VPN server
+	/bin/systemctl restart nordvpnd|logger
+}
+
+stopFW () {
+	echo "$scriptPath: Removing firewall rules..."|logger
+	/sbin/iptables -F
+	/sbin/iptables -t nat -F
+	/sbin/iptables -t mangle -F
+	/sbin/iptables -t raw -F
+	#Blocking lan access temporary to avoid leaks.
+	#/sbin/iptables -I INPUT -i $LANINTERFACE -j DROP
+}
+
+stopKeepAlive () {
+	echo "$scriptPath: Stopping keepAlive..."|logger
+        #Stop constant ping through the VPN for keepalive
+        screen -X -S keepAlive quit 2>&1 >/dev/null
+}
+
+restartNetwork () {
+	echo "$scriptPath: Restarting networking..."|logger
+	/etc/init.d/networking restart
+}
+
+startKeepAlive () {
+	echo "$scriptPath: Starting keepAlive..."|logger
+	#Constant ping through the VPN for keepalive
+	/usr/bin/screen -d -m -S keepAlive ping $KEEPALIVEIP	
+}
+
+addAutoStart () {
+	if [ $(grep -c $scriptName /etc/rc.local) != 1 ]; then #Prevents rc.local config being added multiple times.
+		echo "$scriptPath: Enabling VPN start on reboot..."|logger
+        	lastExitLine=$(grep  -n "exit 0" /etc/rc.local |tail -1|awk -F : '{print $1}')
+		let insertPosition=lastExitLine-1
+		sed -n "1,$insertPosition p" /etc/rc.local > /tmp/rc.local #Send beginnig of file
+		echo -e "$scriptPath/$scriptName connect" >> /tmp/rc.local #Send end of file
+		echo -e "exit 0" >> /tmp/rc.local
+		chmod 775 /tmp/rc.local
+		mv /tmp/rc.local /etc/
+	fi
+}
+
+startVPN () {
+	echo "$scriptPath: Starting VPN..."|logger
+	echo "$scriptPath: Logging into VPN..."|logger
+	#Make sure we are logged into the vpn provider
+    	/usr/bin/nordvpn login --username $VPNUSER --password $VPNPASS |logger
+    	case $1 in 
+	    usapool | us) 
+		echo "$scriptPath: Connecting to pool of predefined countries..."|logger
+		numCountries=${#USACITIESPOOL[*]}
+    		#Select random country from the list
+    		randomCountry=$((1 + $RANDOM % $numCountries))
+    		echo "$scriptPath: Reconecting VPN to ${USACITIESPOOL[$randomCountry]}"|logger
+		#Launch the connect command and check success
+		if [ $(/usr/bin/nordvpn c ${USACITIESPOOL[$randomCountry]}|grep -c "Whoops") == 1 ]; then
+			nordvpn status|logger
+			echo "$scriptPath: Unable to connect to ${USACITIESPOOL[$randomCountry]}..."|logger
+			exit 1
+		fi;;
+
+            eupool | eu)
+                echo "$scriptPath: Connecting to pool of predefined countries..."|logger
+                numCountries=${#EUPOOL[*]}
+                #Select random country from the list
+                randomCountry=$((1 + $RANDOM % $numCountries))
+                echo "$scriptPath: Reconecting VPN to ${EUPOOL[$randomCountry]}"|logger
+		#Launch the connect command and check success
+		if [ $(/usr/bin/nordvpn c ${EUPOOL[$randomCountry]}|grep -c "Whoops") == 1 ]; then
+			nordvpn status|logger
+			echo "$scriptPath: Unable to connect to ${EUPOOL[$randomCountry]}..."|logger
+                        exit 1
+		fi;;
+
+	    *)
+		if [[ -z "$1" ]]; then #If the function was called without $1 parameter
+			if [[ -z "$currentCity" ]]; then
+				if [ $(/usr/bin/nordvpn c $DEFAULTVPNDESTINATION|grep -c "Whoops") == 1 ]; then
+					echo "$scriptPath: Unable to connect to $DEFAULTVPNDESTINATION..."|logger -s
+                                        exit 1
+				fi
+			else
+				if [ $(/usr/bin/nordvpn c $currentCity|grep -c "Whoops") == 1 ]; then
+					echo "$scriptPath: Unable to connect to $currentCity..."|logger -s
+                        		exit 1
+				fi
+			fi
+		else
+			echo "$scriptPath: Connecting to $1..."|logger
+    			#Get the first VPN server in USA 
+    			#SERVER=$(curl -s -g https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations'&'filters={%22country_id%22:228}|awk -F 'hostname":"' '{print $2}'|awk -F . '{print $1}')
+			#Albania
+			#https://nordvpn.com/wp-admin/admin-ajax.php?action=servers_recommendations&filters={%22country_id%22:2,%22servers_groups%22:[11]}
+			#nordvpn connect us5323 - Use country_code+ServerID
+			#Try to connect to $1
+    			if [ $(/usr/bin/nordvpn c $1|grep -c "Whoops") == 1 ]; then
+				echo "$scriptPath: Cannot start VPN. Invalid option: $1 ..."|logger -s
+				echo "$scriptPath: Unable to connect to $currentCity..."|logger -s
+                                exit 1
+			else
+				echo "$scriptPath: VPN started to $1 ..."|logger
+			fi
+		fi;;
+    esac
+}
+
+startFW () {
+	echo "$scriptPath: Starting Firewall..."|logger
+	#Remove any DROP rule. The DROP rule is introduced momentarily when the VPN is stopped to prevent leaks and by nordvpn too?
+	if [ $(iptables -L INPUT -nv -w 20|grep -c "DROP       all  --  $LANINTERFACE   \*       0.0.0.0/0            0.0.0.0/0") == 1 ]; then
+    		lineNumber=$(iptables -L INPUT --line-numbers  -nv -w 20|grep "DROP       all  --  $LANINTERFACE   \*       0.0.0.0/0            0.0.0.0/0"|awk '{print $1}')
+    		iptables -D INPUT $lineNumber
+	fi
+
+#	#Check if the first iptables rule is the one we need for dhcp to work and fix it.
+#	#Rule to accept DHCP traffic after VPN is enabled
+#	#ACCEPT connections from lan0. 
+	if [ $(iptables -L INPUT -nv -w 20|grep -c "ACCEPT     all  --  $LANINTERFACE   \*       0.0.0.0/0            0.0.0.0/0") == 1 ]; then
+		lineNumber=$(iptables -L INPUT --line-numbers  -nv -w 20|grep "ACCEPT     all  --  $LANINTERFACE   \*       0.0.0.0/0            0.0.0.0/0"|awk '{print $1}')
+		iptables -D INPUT $lineNumber
+		iptables -I INPUT -i $LANINTERFACE -j ACCEPT
+	else
+		iptables -I INPUT -i $LANINTERFACE -j ACCEPT
+	fi
+#
+#	#ACCEPT local traffic to the VPN
+#	if [ $(iptables -L OUTPUT -nv -w 20|grep -c "ACCEPT     all  --  \*      $VPNINTERFACE  0.0.0.0/0            0.0.0.0/0") == 1 ]; then
+#                lineNumber=$(iptables -L OUTPUT --line-numbers  -nv -w 20|grep "ACCEPT     all  --  \*      $VPNINTERFACE  0.0.0.0/0            0.0.0.0/0"|awk '{print $1}')
+#                iptables -D OUTPUT $lineNumber
+#                iptables -I OUTPUT -o $VPNINTERFACE -j ACCEPT
+#        else
+#                iptables -I OUTPUT -o $VPNINTERFACE -j ACCEPT
+#        fi
+
+	#ACCEPT replies for established connections.
+	if [ $(/sbin/iptables -L INPUT -nv -w 20|grep "ACCEPT     all  --  $VPNINTERFACE"|grep -c "ctstate ESTABLISHED") == 0 ]; then
+        	iptables -A INPUT -i $VPNINTERFACE -m conntrack --ctstate ESTABLISHED -j ACCEPT
+	fi
+
+	#DROP everything from the VPN
+	if [ $(/sbin/iptables -L -nv -w 20|grep -c "DROP       all  --  $VPNINTERFACE \*       0.0.0.0/0            0.0.0.0/0") == 0 ]; then
+        	#if [ $(/sbin/iptables -L INPUT -nv -w 20|tail -1|grep "REJECT     all  --  $VPNINTERFACE"|grep -c "reject-with icmp-port-unreachable") == 0 ]; then
+        	#iptables -A INPUT -i $VPNINTERFACE -j REJECT
+        	iptables -A INPUT -i $VPNINTERFACE -j DROP
+	fi
+
+	#MASQUERADE
+        #Adding rules to masquerade connections to $WANINTERFACE and $VPNINTERFACE
+        if [ $(/sbin/iptables -t nat -L POSTROUTING 1 -nv -w 20|grep -c "MASQUERADE  all  --  \*      $WANINTERFACE    0.0.0.0/0            0.0.0.0/0") == 0 ]; then
+            echo "$scriptPath: Changing firewall to masquerade connections to $WANINTERFACE and $VPNINTERFACE."|logger
+                #Rules to masquerade traffic with and without VPN
+                /sbin/iptables -t nat -A POSTROUTING -o $WANINTERFACE -j MASQUERADE
+                /sbin/iptables -t nat -A POSTROUTING -o $VPNINTERFACE -j MASQUERADE
+        fi
+}
+
+addRoutes () {
+#https://github.com/bubuntux/nordvpn/issues/75
+#root@3bd4cc091dc3:/# ip route show table 51820
+#default dev nordlynx scope link
+
+#root@3bd4cc091dc3:/# ip rule
+#0:	from all lookup local
+#32763:	from all lookup main suppress_prefixlength 0
+#32764:	not from all fwmark 0xca6c lookup 51820
+#32765:	from all to 84.17.53.158 lookup main
+#32766:	from all lookup main
+#32767:	from all lookup default
+
+#It seems nordvpn is using the technic from wireguard official guide https://www.wireguard.com/netns/ the "Improved Rule-based Routing" section. Basically what it does is: if the IP matches the main routing table with the default route, it will not go to that route, ip rule rejects the rule(32763) and go to the next rule(32764), which use the 51820 routing table, in which the default route is nordvpn.
+
+
+	#Adding rule to enable IGMP traffic from $WANINTERFACE to $LANINTERFACE using igmpproxy for TV remote control
+        #To delete: "ip rule delete priority 32764"
+                #ip rule add from all ipproto 2 lookup igmptv |logger
+		#ip rule add to 224.0.0.0/8 lookup igmptv
+		ip rule add from all ipproto 2 lookup main |logger
+}
+
+removeRoutes () {
+	#Removing rule for IGMP traffic from $WANINTERFACE to $LANINTERFACE
+	if [ $(ip rule list|grep -c "from all ipproto igmp lookup") == 1 ]; then
+                rulePriority=$(ip rule list|grep "from all ipproto igmp lookup"|awk -F: '{print $1}')
+                echo "$scriptPath: Deleting previous rule 'ip rule add from all ipproto 2 lookup [main|igmptv]' with priority $rulePriority"|logger
+                ip rule delete priority $rulePriority|logger
+	fi
+}
+
+addAutoReboot () {
+        #Create the $rebootScriptName script
+cat << 'EOF' > $scriptDirPath/$rebootScriptName
+#!/bin/bash
+#This script's name, cleaned of dots and slashes
+    scriptName=$(echo $0|sed 's/\.\///g')
+    scriptName=$(basename $scriptName)
+    scriptName=$(echo $scriptName|sed 's/\.sh//g')
+    scriptPath=$(whereis $scriptName|awk -F': ' '{print $2}')
+
+checkOverlap () {
+    numScriptExecuting=$(ps axf|grep $scriptName|grep -v grep|wc -l)
+    #echo "$scriptPath: Number of scripts executing: $numScriptExecuting"|logger
+    #If wc reports more than 3 processes running, there are previous executions
+    if [ $numScriptExecuting -gt 3 ]; then
+        echo "$scriptPath: Script already running from a previous execution... Exitting"|logger
+        exit 1
+    fi
+}
+
+currentStatus () {
+    echo "$scriptPath: Ping test UNSUCCESSFUL!!!"|logger
+    echo "Current status of the system:"|logger
+    /sbin/route -n|logger
+    /sbin/ifconfig -a|logger
+    /sbin/iptables -L -nv|logger
+    /sbin/iptables -t nat -L -nv|logger
+    /bin/ps axfu|grep '$scriptName|check'|logger
+    /bin/ping -c1 -q 1.1.1.1|logger
+}
+
+#Check if the script is already running
+checkOverlap
+
+#In case the VPN goes down (I.e. Internet router reboot)
+counter=0
+while [ $counter -lt 2 ]; do
+    let counter=counter+1
+    #Do not continue until checkVPN and checkFW processes finish. Iterate 10 times and exit
+    sleepCounter=0
+    while [ $sleepCounter -lt 10 ]; do
+        let sleepCounter=sleepCounter+1
+        if [ $(ps axf|grep -v vi|grep -c "[m]anageNord") == 1 ]; then
+                echo "$scriptPath: `ps axf|grep -v vi|grep -c "[m]anageNord"`i"|logger
+                echo "$scriptPath: checkVPN process found, sleeping 1 second. Attempt: $sleepCounter"|logger
+                sleep 1
+        else
+            #echo "$scriptPath: checkVPN process not found, lets continue."|logger
+            break
+        fi
+
+        if [ $sleepCounter -eq 10 ]; then
+            echo "$scriptPath: manageVPN process still active after $sleepCounter seconds. Let's continue with the $scriptName routine..."|logger
+        fi
+    done
+
+    if [ $(/bin/ping -c2 -q 1.1.1.1|grep -c "100% packet loss") == 1 ]; then
+        currentStatus
+        case $counter in
+            1)
+                echo "$scriptPath: FAILURE!!! ping -c2 1.1.1.1 returns 100% packet loss on attempt: $counter, sleeping 130 seconds..."|logger
+                sleep 130;;
+            2)
+                echo "$scriptPath: Rebooting!!!"|logger
+                /bin/sync
+                /sbin/reboot;;
+        esac
+    else
+        echo "$scriptPath: SUCCESS!!! ping -c2 1.1.1.1 returns 0% packet loss on attempt: $counter"|logger
+        #Update the counter and exit without rebooting
+        let counter=counter+1
+    fi
+done
+exit 0
+EOF
+chmod 770 $scriptDirPath/$rebootScriptName
+}
+
+addCron () {
+	echo "$scriptPath: Adding cron checks..."|logger
+	if [ ! -f /etc/cron.d/vpnChecks ]; then
+        	echo -e "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n" > /etc/cron.d/vpnChecks
+        	echo -e "#Monitor VPN interface" >> /etc/cron.d/vpnChecks
+        	echo -e "01,03,05,07,09,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43,45,47,49,51,53,55,57,59 * * * * root $scriptPath check 2>&1 >/dev/null\n" >> /etc/cron.d/vpnChecks
+        	echo -e "#Reboot if nothing else works" >> /etc/cron.d/vpnChecks
+        	echo -e "02,06,10,14,18,22,26,30,34,38,42,46,50,54,58 * * * * root /usr/local/bin/$rebootScriptName 2>&1 >/dev/null\n" >> /etc/cron.d/vpnChecks
+        	echo -e "#Check for updates in the morning" >> /etc/cron.d/vpnChecks
+        	echo -e "44 04 * * * root $scriptPath update 2>&1 >/dev/null\n" >> /etc/cron.d/vpnChecks
+		#echo -e "#Hop through VPNs when TV is not on" >> /etc/cron.d/vpnChecks
+                #echo -e "04,32 * * * * root $scriptPath connect $currentCity 2>&1 >/dev/null\n" >> /etc/cron.d/vpnChecks
+    	fi
+}
+
+currentStatus () {
+    echo "$scriptPath: Current status of the system: "|tee -a /var/log/syslog
+    /sbin/route -n|tee -a /var/log/syslog
+    /sbin/ifconfig -a|tee -a /var/log/syslog
+    /sbin/iptables -L -nv -w 20|tee -a /var/log/syslog
+    /sbin/iptables -t nat -L -nv -w 20|tee -a /var/log/syslog
+    /bin/ps axfu|grep $scriptName|grep -v grep|tee -a /var/log/syslog
+    /bin/ping -c1 -q $KEEPALIVEIP|tee -a /var/log/syslog
+    /usr/bin/nordvpn status|tee -a /var/log/syslog
+}
+
+stopAll () {
+	removeCron
+	removeAutoStart
+	removeAutoReboot
+	stopFW
+        stopVPN
+	removeRoutes
+        stopKeepAlive
+}
+
+startAll () {
+	startVPN $1
+        startFW
+	addRoutes
+	addAutoReboot
+        addCron
+	addAutoStart
+        startKeepAlive
+}
+
+restartConnections () {
+	stopAll
+        restartNetwork
+        startAll
+}
+
+checkVPNIface () {
+	echo "$scriptPath: Check if the VPN is UP..."|logger
+	#Check if the VPN interface is up
+    	if [ $(/sbin/route -n|grep -c $VPNINTERFACE) == 0 ]; then
+        	echo "$scriptPath: Nordlynx interface disappeared. Trying to bring nordlynx interface back up by restarting the connections."|logger
+		echo "Whoops"
+    	fi
+}
+
+checkPingReply () {
+	echo "$scriptPath: Checking replies to pings..."|logger
+	#In case the VPN goes down (I.e. Internet router reboot)
+	counter=0
+while [ $counter -lt 2 ]; do
+    let counter=counter+1
+    if [ $(/bin/ping -c2 -q $KEEPALIVEIP|grep -c "100% packet loss") == 1 ]; then
+        echo "$scriptPath: ping -c2 $KEEPALIVEIP returns 100% packet loss. Attempt: $counter"|logger
+        currentStatus
+        case $counter in
+            1)
+                echo "$scriptPath: sleep 3 after failing our attempt $counter"|logger
+                sleep 3;;
+            2)
+                echo "$scriptPath: We still have no ping on the second attempt. Let's try to restart the VPN and firewall first..."|logger
+		stopAll
+		startAll
+                currentStatus
+                if [ $(/bin/ping -c2 -q $KEEPALIVEIP|grep -c "100% packet loss") == 1 ]; then
+                    echo "$scriptPath: Restarting the VPN and firewall was not enough, we still have no ping. Restarting all connections..."|logger
+                    restartConnections
+                else
+                    echo "$scriptPath: SUCCESS!!! Restarting the VPN and firewall was enough."|logger
+                    break
+                fi;;
+        esac
+    else
+        #echo "$scriptPath: SUCCESS!!! ping -c2 $KEEPALIVEIP returns 0% packet loss on attempt: $counter"|logger
+        #Avoid repeating the loop if the test was successful
+        break
+    fi
+done
+}
+
+
+case $1 in
+	connect | c) 
+		checkOverlap
+		stopAll
+		startAll $2
+		currentStatus
+		;;
+
+	disconnect | d)
+                stopAll
+		#This action does not check if the script is already running. 
+		#We now kill any previous executing of this script that was already running
+		killall -9 $scriptName 2>&1 >/dev/null
+		currentStatus
+		;;
+
+	check) 
+		checkOverlap
+		startFW
+		checkSuccess=$(checkVPNIface)
+			if [ "$checkSuccess" == "Whoops" ]; then
+				restartConnections
+                	fi
+		checkPingReply;; #checkPingReply also calls restartConnections internally if it fails
+	
+	update)
+		#Check that the TV is off before disconnecting the VPN
+		if [ $(ping -c2 -q $TVIP|grep -c "100% packet loss" ) == 1 ]; then
+			echo "$scriptPath: Checking for VPN software updates..."|logger
+			apt-get update|logger
+			stopAll
+			apt-get install nordvpn|logger
+			startAll
+			echo "$scriptPath: VPN software updates finished..."|logger
+		else
+			echo "$scriptPath: TV is ON. Not Checking for VPN software updates..."|logger
+		fi;;
+	status)
+		currentStatus
+		;;
+
+	*) 
+		echo -e "$scriptPath: Invalid Option: $1\n"
+		echo "Usage: "
+		echo "Reconnect to the same city or default city if not currently connected: "
+		echo -e "$scriptName connect\n"
+		echo "Connect to USA or EU pool: "
+		echo "$scriptName connect usapool"
+		echo -e "$scriptName connect eupool\n"
+		echo "Connect to a desired server, city or country: "
+		echo -e "$scriptName connect [server|city|country]\n"
+		echo "Disconnect: "
+		echo -e "$scriptName disconnect\n"
+		echo "Perform checks: "
+		echo -e "$scriptName check\n"
+		exit 1;;
+esac
+exit 0
